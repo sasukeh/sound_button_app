@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sound File Recorder and Uploader</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        input[type="text"], input[type="file"], input[type="submit"], select, button {
+            padding: 10px;
+            font-size: 16px;
+        }
+        input[type="submit"], button {
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        #recordButton.recording {
+            background-color: red;
+            color: white;
+        }
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .sound-button {
+            width: 60px;
+            height: 60px;
+            padding: 0;
+            font-size: 14px;
+            border: none;
+            border-radius: 50%; /* 丸いボタン */
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .sound-button.assigned {
+            background-color: red;
+            color: white;
+        }
+        .sound-button.unassigned {
+            background-color: grey;
+            color: white;
+            cursor: not-allowed;
+        }
+        .sound-button.playing {
+            background-color: blue;
+            color: white;
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        li {
+            margin: 5px 0;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>音声ファイルの録音とアップロード</h1>
+        <form id="uploadForm" method="post" enctype="multipart/form-data">
+            <label for="filename">ファイル名を入力してください:</label>
+            <input type="text" name="filename" id="filename" required>
+
+            <label for="button">ボタンを選択してください:</label>
+            <select name="button" id="button" required>
+                {% for button in buttons %}
+                    <option value="{{ button }}">Button {{ button }}</option>
+                {% endfor %}
+            </select>
+
+            <!-- ファイル選択ボタンの追加 -->
+            <label for="file">ファイルから選択:</label>
+            <input type="file" name="file" id="file" accept=".wav,.mp3,.mp4,.m4a">
+
+            <!-- プレビューオーディオ要素 -->
+            <audio id="filePreview" controls style="display: none;"></audio>
+
+            <!-- 録音機能も維持 -->
+            <button type="button" id="recordButton">録音開始</button>
+            <button type="button" id="stopButton" disabled>録音停止</button>
+            <audio id="audioPreview" controls></audio>
+            <!-- Base64でエンコードされたファイルデータを送信するための隠しフィールド -->
+            <input type="hidden" name="file_data" id="fileDataInput">
+            <input type="submit" value="Upload">
+        </form>
+
+        <h2>4x4 Sound Pad</h2>
+        <div class="button-grid">
+            {% for button in buttons %}
+                <button class="sound-button {% if button in assigned_buttons %}assigned{% else %}unassigned{% endif %}" 
+                        id="button{{ button }}" onclick="playSound({{ button }})" {% if button not in assigned_buttons %}disabled{% endif %}>
+                    Button {{ button }}
+                </button>
+            {% endfor %}
+        </div>
+
+        <h2>アップロードされたファイル</h2>
+        <ul>
+        {% for file in files %}
+            <li>{{ file }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        const recordButton = document.getElementById('recordButton');
+        const stopButton = document.getElementById('stopButton');
+        const audioPreview = document.getElementById('audioPreview');
+        const fileSelector = document.getElementById('file');
+        const filePreview = document.getElementById('filePreview');
+        const fileDataInput = document.getElementById('fileDataInput');
+
+        // ファイル選択時にプレビューを表示
+        fileSelector.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                filePreview.src = url;
+                filePreview.style.display = 'block';
+                fileDataInput.value = '';  // ファイルを選択した場合は、file_dataの隠しフィールドをクリア
+            }
+        });
+
+        function encodeWAV(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+            const writeString = (view, offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++, offset += 2) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+
+            return buffer;
+        }
+
+        recordButton.addEventListener('click', async () => {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.start();
+                    audioChunks = [];
+
+                    mediaRecorder.addEventListener('dataavailable', event => {
+                        audioChunks.push(event.data);
+                    });
+
+                    mediaRecorder.addEventListener('stop', async () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        const reader = new FileReader();
+                        reader.onloadend = () => {
+                            const base64String = reader.result.split(',')[1];  // Base64データだけを取得
+                            fileDataInput.value = `data:audio/wav;base64,${base64String}`;  // Base64データを隠しフィールドに設定
+                        };
+                        reader.readAsDataURL(audioBlob);
+
+                        // プレビューを更新
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        audioPreview.src = audioUrl;
+                        audioPreview.style.display = 'block';
+
+                        // UIリセット
+                        recordButton.textContent = "録音開始";
+                        recordButton.classList.remove("recording");
+                    });
+
+                    // UIの更新
+                    recordButton.textContent = "録音中";
+                    recordButton.classList.add("recording");
+                    recordButton.disabled = true;
+                    stopButton.disabled = false;
+                } catch (err) {
+                    console.error("マイクにアクセスできません", err);
+                    alert("マイクへのアクセスが拒否されました。設定を確認してください。");
+                }
+            } else {
+                alert("このブラウザは録音をサポートしていません。最新のブラウザを使用してください。");
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            mediaRecorder.stop();
+            recordButton.disabled = false;
+            stopButton.disabled = true;
+        });
+
+        function playSound(buttonNumber) {
+            const button = document.getElementById(`button${buttonNumber}`);
+            button.classList.add('playing');
+            button.textContent = "再生中";
+
+            const audio = new Audio(`/play_sound/sound${buttonNumber}.wav`);
+            audio.play();
+
+            audio.onended = () => {
+                button.classList.remove('playing');
+                button.textContent = `Button ${buttonNumber}`;
+            };
+        }
+    </script>
+</body>
+</html>
